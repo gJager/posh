@@ -368,10 +368,10 @@ class PoshEnv:
 
         if self._var_stdout:
             self._stdout.seek(0)
-            result = self._stdout.read()
+            result = self._stdout.read().decode()
         if self._var_stderr:
             self._stderr.seek(0)
-            result = self._stderr.read()
+            result = self._stderr.read().decode()
 
         self._reset_state()
         return result
