@@ -1,8 +1,32 @@
 ## Examples
-pipe().a(args).b(args).c().end()
-v = var().x(args)
-v = var().pipe().a().b().end()
-redir(1, 'filename').pipe().a().b().end()
+### sh.a()
+Run a command named `a`.
+
+### sh.redir(stdout='afile').a()
+Run a command named `a` and pipe it's stdout into a file named `afile`.
+
+### redir(stdout='afile').a().b()
+Run a command named `a` and pipe it's stdout into a file named `afile`. Then 
+run `a`.
+
+### sh.var().a()
+Run a command named `a` and return it's stdout as a variable.
+
+### var().a().b()
+Invalid usage. `var().a()` will return a byte string.
+
+### pipe().a().b().end()
+Run a command named `a` and pipe it's stdout of into command named `b`.
+
+### pipe().a().b().var().end()
+Run a command named `a` and pipe it's stdout of into command named `b`, and 
+return `b`'s stdout as a variable
+
+### sh.exe-with-invalid-name()
+Invalid. An executable with a invalid python name can't be called like this.
+
+### sh['exe-with-invalid-name']()
+Run an exe with the name 'exe-with-invalid-name'
 
 ## builtins
 #### cd
@@ -21,5 +45,3 @@ Tell the shell to redirect stdin/out/err to a variable.
 #### which
 Output the path to the exe a command is associated with.
 
-## Interactive shell usage
-python3 -i posh.py
