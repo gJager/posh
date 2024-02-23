@@ -1,10 +1,12 @@
 import sys
 import functools
 import os
+import shutil
 import subprocess
 from subprocess import Popen
 from pathlib import Path
 from tempfile import TemporaryFile
+from functools import partial
 
 STDIN=-1
 STDOUT=-2
@@ -15,25 +17,66 @@ NULL=-6
 FILE=-7
 
 
+def var(job):
+    """Try to read and then close stdout/stderr of a job"""
+    try:
+        job.stdout.seek(0)
+        stdout = job.stdout.read().decode()
+        job.stdout.close()
+    except:
+        stdout = None
+    try:
+        job.stderr.seek(0)
+        stderr = job.stderr.read().decode()
+        job.stderr.close()
+    except:
+        stderr = None
+
+    if stdout is not None and stderr is not None:
+        result = (stdout, stderr)
+    elif stdout and stderr is None:
+        result = stdout
+    elif stderr and stdout is None:
+        result = stderr
+    else:
+        result = None
+
+    return result
+
+
 class Job:
-    def __init__(self, path, *args, var=os.environ, cwd=None):
+    """A Job is a wrapper around a Popen.
+
+    You might be asking, why do we need a wrapper around Popen?
+    The main reason is that I want to be able to modify the object
+    before starting the process. It's also nice to be able to
+    control the interface.
+    """
+
+    def __init__(self, path, *args, env=os.environ, cwd=None):
         self.path = path
         self.args = args
-        self.var = var
+        self.env = env
         self.proc = None
-        self.cwd = cwd or var.get('PWD', None)
+        self.cwd = cwd or env.get('PWD', '/')
 
-        # Default files. Use stdxxx.buffer for bytes.
+        # Default files. Use stdxxx.buffer for byte buffers
         self.stdin = sys.stdin
         self.stdout = sys.stdout.buffer
         self.stderr = sys.stderr.buffer
 
     def start(self):
+        """Start the process ifbit isn't running"""
+        # Dont start if a proc is already running.
+        status = self.status()
+        if status != "unstarted" and status != "finished":
+            return
+
         # Setup the command
         cmd = [str(self.path)]+list(self.args)
 
         # Run the process
-        self.proc = Popen(cmd, cwd=self.cwd, env=self.var, stdout=self.stdout, stderr=self.stderr, stdin=self.stdin)
+        self.proc = Popen(cmd, cwd=self.cwd, env=self.env, stdout=self.stdout, stderr=self.stderr, stdin=self.stdin)
 
     def status(self):
         """Status of the job: eg. running, finished"""
@@ -46,7 +89,8 @@ class Job:
             return 'running'
 
     def wait(self):
-        if self.proc:
+        if self.proc and self.status != "finished":
+            # If this proc outputs too much this might cause issues
             self.proc.communicate()
 
     def get_fds(self):
@@ -56,165 +100,16 @@ class Job:
             return None, None
 
 
-class Command:
-    """A command that can be run"""
-    def __init__(self, env):
-        self.env = env
+class Posh:
+    def __init__(self, cwd=None, environ=None):
+        self.cwd = cwd or os.getcwd()
+        self.environ = dict(os.environ) if environ is None else environ
+        self.returncode = 0
 
-    def run(self):
-        pass
-
-
-class BuiltinCommand(Command):
-    def __init__(self, env, name, func):
-        super().__init__(env)
-        self.name = name
-        self.func = func
-
-    def run(self, *args, **kwargs):
-        self.func(self, *args, **kwargs)
-
-
-class ExecCommand(Command):
-    def __init__(self, env, path):
-        super().__init__(env)
-        self.path = Path(path)
-        self.name = self.path.name
-
-    def run(self, *args, **kwargs):
-        job = Job(self.path, *args, var=self.env.var)
-
-        # Use the env's files
-        job.stdin = self.env._stdin
-        job.stdout = self.env._stdout
-        job.stderr = self.env._stderr
-
-        # Setup pipes
-        piping = True
-        if self.env._pipe_stdout and not self.env._pipe_stderr:
-            job.stdout = subprocess.PIPE
-        elif self.env._pipe_stdout and self.env._pipe_stderr:
-            job.stdout = subprocess.PIPE
-            job.stderr = subprocess.STDOUT
-        elif self.env._pipe_stderr and not self.env._pipe_stdout:
-            job.stderr = subprocess.PIPE
-        else:
-            piping = False
-
-        job.start()
-
-        jobout, joberr = job.get_fds()
-
-        # If we are piping, pass it into the next stdin
-        if self.env._pipe_stdout:
-            if jobout is not None:
-                self.env._stdin = jobout
-            else:
-                raise ValueError("I expected the job's stdout to be piped")
-        elif self.env._pipe_stderr:
-            if joberr is not None:
-                self.env._stdin = joberr
-            else:
-                raise ValueError("I expected the job's stderr to be piped")
-
-        # If we aren't piping, wait for the job to finish
-        if not piping:
-            job.wait()
-
-        self.env._last_job = job
-
-
-builtins = {}
-
-def pipe(self, *args):
-    if STDOUT in args or STDERR not in args:
-        self.env._pipe_stdout = True
-    if STDERR in args:
-        self.env._pipe_stderr = True
-
-builtins['pipe'] = pipe
-
-def end(self):
-    job = self.env._last_job
-    fds = [fd for fd in job.get_fds() if fd is not None]
-
-    while True:
-        for fd in fds:
-            data = fd.read()
-            self.env._stdout.write(data)
-        if job.status() == 'finished':
-            break
-                
-    self.env._pipe_stdout = False
-    self.env._pipe_stderr = False
-
-
-builtins['end'] = end
-
-def cd(self, path=None):
-    if path is None:
-        path = self.env.var.get('HOME', '/')
-    path = Path(self.env.var['PWD'], path)
-    if path.is_dir():
-        self.env.var['PWD'] = str(path.resolve())
-    else:
-        self.env._stderr.write(b'No such directory: '+bytes(path)+b'\n')
-
-builtins['cd'] = cd
-
-def redir(self, stdin=STDIN, stdout=STDOUT, stderr=STDERR):
-    if stdout == NULL:
-        stdout = '/dev/null'
-    if stderr == NULL:
-        stderr = '/dev/null'
-
-    if stdin == STDIN:
-        self.env._stdin = sys.stdin
-    elif isinstance(stdin, (str, Path)):
-        path = self.env.normalize_path(stdin)
-        self.env._stdin = path.open('rb')
-
-    if stdout == STDOUT:
-        self.env._stdout = sys.stdout.buffer
-    elif stdout == VAR:
-        self.env._stdout = TemporaryFile()
-        self.env._var_stdout = True
-    elif isinstance(stdout, (str, Path)):
-        path = self.env.normalize_path(stdout)
-        self.env._stdout = path.open('ab')
-
-    if stderr == STDERR:
-        self.env._stderr = sys.stderr.buffer
-    elif stdout == VAR:
-        self.env._stderr = TemporaryFile()
-        self.env._var_stderr = True
-    elif stderr == STDOUT:
-        self.env._stderr = sys.stdout.buffer
-    elif isinstance(stderr, (str, Path)):
-        path = self.env.normalize_path(stderr)
-        self.env._stderr = path.open('ab')
-
-builtins['redir'] = redir
-
-def var(self, *args):
-    redir_args = {}
-    if STDOUT in args or STDERR not in args:
-        redir_args['stdout'] = VAR
-    if STDERR in args:
-        redir_args['stderr'] = VAR
-    return redir(self, **redir_args)
-
-builtins['var'] = var
-
-
-class PoshEnv:
-    def __init__(self, posh, var=None):
-        """Create a shell env for the shell (posh). Can take env vars"""
-
-        # Tracking things
-        self.posh = posh
-        self._paths = []
-        self._commands = {}
+        # Files
+        self._stdin = sys.stdin
+        self._stdout = sys.stdout.buffer
+        self._stderr = sys.stderr.buffer
 
         # Some state
         self._pipe_stdout = False
@@ -222,168 +117,195 @@ class PoshEnv:
         self._var_stdout = False
         self._var_stderr = False
         self._last_job = None
-
-        # Files
-        self._stdin = sys.stdin
-        self._stdout = sys.stdout.buffer
-        self._stderr = sys.stderr.buffer
-
-        # Default to parent's env vars
-        self.var = var or os.environ
-
-        # Setup env variables
-        self._set_default_env()
-
-        # Load builtin commands
-        self._add_builtins()
-
-        # Load path
-        for path in self.var.get('PATH', '').split(':'):
-            self.add_path(path)
-
-    def normalize_path(self, path):
-        path = Path(path)
-        if not path.is_absolute():
-            path = Path(self.var['PWD'], path)
-        return path
+        self._bg = False
 
     def _reset_state(self):
         if self._stdin != sys.stdin:
-            self._stdin.close()
+            try:
+                self._stdin.close()
+            except:
+                pass
         self._stdin = sys.stdin
 
         if self._stdout != sys.stdout.buffer:
-            self._stdout.close()
+            try:
+                self._stdout.close()
+            except:
+                pass
         self._stdout = sys.stdout.buffer
 
         if self._stderr != sys.stderr.buffer:
-            self._stderr.close()
+            try:
+                self._stderr.close()
+            except:
+                pass
         self._stderr = sys.stderr.buffer
 
         self._pipe_stdout = False
         self._pipe_stderr = False
         self._var_stdout = False
         self._var_stderr = False
+        self._bg = False
 
-    def _set_default_env(self):
-        self.var.setdefault('PWD', '/')
-
-    def _add_builtins(self):
-        for builtin, func in builtins.items():
-            self._add_command(BuiltinCommand(self, builtin, func))
-
-    def add_path(self, path):
+    def _resolve_path(self, path):
         path = Path(path)
+        if not path.is_absolute():
+            path = Path(self.cwd, path)
+        return path.resolve()
 
-        exes = []
-
-        # Test if path is a dir
-        if not path.is_dir():
-            return
-
-        # Get a list of executables in the path
-        for filename in list(path.iterdir()):
-            if os.access(filename, os.X_OK):
-                exes.append(ExecCommand(self, filename))
-
-        # Add the executables to the shell
-        for exe in exes:
-            self._add_command(exe)
-
-        # Track which paths we have loaded
-        self._paths.append(path)
-
-        # If we are adding a path not in PATH, add it there
-        if str(path) not in self.var.get('PATH', ''):
-            self.var['PATH'] = self.var.get('PATH', '') + ':' + str(path)
-
-    def _add_command(self, command):
-        # Skip collisions
-        if getattr(self.posh, command.name, None):
-            return
-
-        # Preload the function with the exe
-        func = functools.partial(self._run_command, command)
-
-        # Add to shell
-        setattr(self.posh, command.name, func)
-        #print('added ', command.name)
-
-        # Track commands
-        self._commands[command.name] = command
-
-        # TODO add to globals here
-
-    def remove_path(self, path):
-        path = Path(path)
-
-        # Stop tracking this path
-        if path in self._paths:
-            self._paths.remove(path)
-
-        # Remove this path from PATH
-        if str(path) in self.var.get('PATH', ''):
-            self.var['PATH'] = self.var.get('PATH', '').replace(str(path), '').replace('::', ':')
-
-        # Get a list of exes added from this path
-        from_path = []
-        for command in self._commands:
-            if not isinstance(command, ExecCommand):
-                continue
-            if command.path.parent.samefile(path):
-                from_path.append(command)
-
-
-    def _remove_command(self, command):
-
-        # Remove from shell
-        if getattr(self.posh, command.name, ""):
-            delattr(self.posh, command.name) 
-
-        # TODO remove from globals
-
-        # Stop tracking exe
-        if command.name in self._commands: 
-            del self._commands[command.name]
-
-
-    def _run_command(self, command, *args, **kwargs):
-        #TODO handle different circumstances here.
-        #print('im gonna run a command now', command.name, args, kwargs)
-        if self._var_stdout or self._var_stderr:
-            var_out = True
+    def cd(self, path=None):
+        if not path:
+            path = self.environ.get('HOME', '/')
+        path = self._resolve_path(path)
+        if os.access(path, os.W_OK):
+            self.returncode = 0
+            self.cwd = str(path)
+            self.environ['PWD'] = self.cwd
         else:
-            var_out = False
+            self._builtin_response(1, "No permission")
+        return self
 
-        command.run(*args, **kwargs)
+    def redir(self, stdin=None, stdout=None, stderr=None):
+        if stdin == STDIN:
+            self._stdin = sys.stdin
+        elif isinstance(stdin, (str, Path)):
+            path = self._resolve_path(stdin)
+            self._stdin = path.open('rb')
 
-        result = self.posh
+        if stdout == STDOUT:
+            self._stdout = sys.stdout.buffer
+        elif stdout == VAR:
+            self._stdout = TemporaryFile()
+            self._var_stdout = True
+        elif stdout == NULL:
+            self._stdout = subprocess.DEVNULL
+        elif isinstance(stdout, (str, Path)):
+            path = self._resolve_path(stdout)
+            self._stdout = path.open('ab')
 
-        # We just turned on var, so don't turn it off yet
-        if not var_out and self._var_stdout or self._var_stderr:
-            return result
+        if stderr == STDERR:
+            self._stderr = sys.stderr.buffer
+        elif stderr == VAR:
+            self._stderr = TemporaryFile()
+            self._var_stderr = True
+        elif stderr == NULL:
+            self._stderr = subprocess.DEVNULL
+        elif stderr == STDOUT:
+            self._stderr = sys.stdout.buffer
+        elif isinstance(stderr, (str, Path)):
+            path = self._resolve_path(stderr)
+            self._stderr = path.open('ab')
+        return self
+
+    def null(self, *args):
+        redir_args = {}
+        if STDOUT in args or STDERR not in args:
+            redir_args['stdout'] = NULL
+        if STDERR in args:
+            redir_args['stderr'] = NULL
+        return self.redir(**redir_args)
+
+    def var(self, *args):
+        redir_args = {}
+        if STDOUT in args or STDERR not in args:
+            redir_args['stdout'] = VAR
+        if STDERR in args:
+            redir_args['stderr'] = VAR
+        return self.redir(**redir_args)
+
+    def pipe(self, *args):
+        if STDOUT in args or STDERR not in args:
+            self._pipe_stdout = True
+        if STDERR in args:
+            self._pipe_stderr = True
+        self._last_job = None
+        return self
+
+    def end(self):
+        job = self._last_job
+
+        job.stdout = self._stdout
+        job.stderr = self._stderr
+                    
+        self._pipe_stdout = False
+        self._pipe_stderr = False
+
+        return self._execute(job)
+
+    def bg(self):
+        self._bg = True
+        return self
+
+    def _builtin_response(self, status, output):
+        self.returncode = status
+        self._stderr.write(output.encode()+b'\n')
+        
+    def __getattr__(self, name):
+        path = shutil.which(name, path=self.environ.get("PATH"))
+        if not path:
+            def error(*args, **kwargs):
+                self._builtin_response(1, "Couldn't find "+name)
+                return self
+            return error
+        else:
+            return partial(self._run, path)
+
+    def __getitem__(self, name):
+        return self.__getattr__(name)
+
+    def __bool__(self):
+        return self.returncode == 0
+
+    def _run(self, path, *args, **kwargs):
+        #TODO catch errors
+        job = Job(path, *args, env=self.environ)
+
+        # Use the env's files
+        job.stdin = self._stdin
+        job.stdout = self._stdout
+        job.stderr = self._stderr
 
         if self._pipe_stdout or self._pipe_stderr:
-            return result
+            self._execute_pipe(job)
+            return self
+        return self._execute(job)
 
-        if self._var_stdout:
-            self._stdout.seek(0)
-            result = self._stdout.read().decode()
-        if self._var_stderr:
-            self._stderr.seek(0)
-            result = self._stderr.read().decode()
+    def _execute(self, job):
+        job.start()
+        if self._bg:
+            return job
+        job.wait()
+        self.returncode = job.proc.returncode
 
+        self._last_job = job
+
+        result = var(job) or self
         self._reset_state()
         return result
 
 
-class Posh:
-    def __init__(self, env=None):
-        self.env = env or PoshEnv(self)
+    def _execute_pipe(self, job):
+        last_job = self._last_job
+        if last_job:
+            last_job.start()
 
-    def __getitem__(self, arg):
-        if arg not in self.__dict__:
-            raise AttributeError(f"No function named {arg}")
-        return self.__dict__[arg]
+            stdout, stderr = last_job.get_fds()
+            if self._pipe_stdout:
+                if stdout is not None:
+                    job.stdin = stdout
+            elif self._pipe_stderr:
+                if stderr is not None:
+                    job.stdin = stderr
 
+        if self._pipe_stdout and not self._pipe_stderr:
+            job.stdout = subprocess.PIPE
+        elif self._pipe_stdout and self._pipe_stderr:
+            job.stdout = subprocess.PIPE
+            job.stderr = subprocess.STDOUT
+        elif self._pipe_stderr and not self._pipe_stdout:
+            job.stderr = subprocess.PIPE
+
+        self._last_job = job
+        
+    
 sh = Posh()
