@@ -272,6 +272,9 @@ class Posh:
 
     def _execute(self, job):
         job.start()
+
+        self._reset_state()
+
         if self._bg:
             return job
         job.wait()
@@ -280,7 +283,6 @@ class Posh:
         self._last_job = job
 
         result = var(job) or self
-        self._reset_state()
         return result
 
 
