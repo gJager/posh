@@ -201,7 +201,7 @@ class Posh:
         redir_args = {}
         if STDOUT in args or STDERR not in args:
             redir_args['stdout'] = NULL
-        if STDERR in args:
+        if STDERR in args or STDERR not in args:
             redir_args['stderr'] = NULL
         return self.redir(**redir_args)
 
