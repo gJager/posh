@@ -1,5 +1,4 @@
 #TODO Change how files are handled so that we are opening/closing them properly
-#TODO Can we get sh.notavalidcmd to return a function that evaluates to False?
 #TODO Stretch goal. Make Job generic. Make sh that can run Popen jobs as well as
 #       run jobs in a process (this would allow control via ssh)
 import sys
@@ -246,10 +245,18 @@ class Posh:
         
     def __getattr__(self, name):
         path = shutil.which(name, path=self.environ.get("PATH"))
+        this_shell = self
         if not path:
-            def error(*args, **kwargs):
-                self._builtin_response(1, "Couldn't find "+name)
-                return self
+            # I tried setting __bool__ on a function but that didn't
+            # work, so instead we define a class that we can call like
+            # a function.
+            class Error:
+                def __call__(self, *args, **kwargs):
+                    self._builtin_response(1, "Couldn't find "+name)
+                    return this_shell
+                def __bool__(self):
+                    return False
+            error = Error()
             return error
         else:
             return partial(self._run, path)
