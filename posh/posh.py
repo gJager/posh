@@ -109,10 +109,15 @@ class Posh:
         self.environ = dict(os.environ) if environ is None else environ
         self.returncode = 0
 
+        # Default files
+        self._stdin_default = sys.stdin
+        self._stdout_default = sys.stdout.buffer
+        self._stderr_default = sys.stderr.buffer
+
         # Files
-        self._stdin = sys.stdin
-        self._stdout = sys.stdout.buffer
-        self._stderr = sys.stderr.buffer
+        self._stdin = self._stdin_default
+        self._stdout = self._stdout_default
+        self._stderr = self._stderr_default
 
         # Some state
         self._pipe_stdout = False
@@ -128,21 +133,21 @@ class Posh:
                 self._stdin.close()
             except:
                 pass
-        self._stdin = sys.stdin
+        self._stdin = self._stdin_default
 
         if self._stdout != sys.stdout.buffer:
             try:
                 self._stdout.close()
             except:
                 pass
-        self._stdout = sys.stdout.buffer
+        self._stdout = self._stdout_default
 
         if self._stderr != sys.stderr.buffer:
             try:
                 self._stderr.close()
             except:
                 pass
-        self._stderr = sys.stderr.buffer
+        self._stderr = self._stderr_default
 
         self._pipe_stdout = False
         self._pipe_stderr = False
@@ -155,6 +160,14 @@ class Posh:
         if not path.is_absolute():
             path = Path(self.cwd, path)
         return path.resolve()
+
+    def default_files(self,
+                      stdin=sys.stdin,
+                      stdout=sys.stdout.buffer,
+                      stderr=sys.stderr.buffer):
+        self._stdin_default = stdin
+        self._stdout_default = stdout
+        self._stderr_default = stderr
 
     def cd(self, path=None):
         if not path:
