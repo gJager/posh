@@ -1,3 +1,7 @@
+#TODO Change how files are handled so that we are opening/closing them properly
+#TODO Can we get sh.notavalidcmd to return a function that evaluates to False?
+#TODO Stretch goal. Make Job generic. Make sh that can run Popen jobs as well as
+#       run jobs in a process (this would allow control via ssh)
 import sys
 import functools
 import os
