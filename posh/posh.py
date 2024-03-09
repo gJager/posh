@@ -2,7 +2,6 @@
 #TODO Stretch goal. Make Job generic. Make sh that can run Popen jobs as well as
 #       run jobs in a process (this would allow control via ssh)
 import sys
-import functools
 import os
 import shutil
 import subprocess
@@ -128,25 +127,8 @@ class Posh:
         self._bg = False
 
     def _reset_state(self):
-        if self._stdin != sys.stdin:
-            try:
-                self._stdin.close()
-            except:
-                pass
         self._stdin = self._stdin_default
-
-        if self._stdout != sys.stdout.buffer:
-            try:
-                self._stdout.close()
-            except:
-                pass
         self._stdout = self._stdout_default
-
-        if self._stderr != sys.stderr.buffer:
-            try:
-                self._stderr.close()
-            except:
-                pass
         self._stderr = self._stderr_default
 
         self._pipe_stdout = False
