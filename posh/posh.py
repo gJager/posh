@@ -1,3 +1,4 @@
+#TODO Run str() on non str/byte command args
 #TODO Change how files are handled so that we are opening/closing them properly
 #TODO Stretch goal. Make Job generic. Make sh that can run Popen jobs as well as
 #       run jobs in a process (this would allow control via ssh)
@@ -5,57 +6,40 @@ import sys
 import os
 import shutil
 import subprocess
+import enum
+from typing import IO
 from subprocess import Popen
 from pathlib import Path
 from tempfile import TemporaryFile
 from functools import partial
 
-STDIN=-1
-STDOUT=-2
-STDERR=-3
-PIPE=-4
-VAR=-5
-NULL=-6
-FILE=-7
+class PoshError(Exception):
+    """Error caught by Posh."""
 
+    pass
 
-def var(job):
-    """Try to read and then close stdout/stderr of a job"""
-    try:
-        job.stdout.seek(0)
-        stdout = job.stdout.read().decode()
-        job.stdout.close()
-    except:
-        stdout = None
-    try:
-        job.stderr.seek(0)
-        stderr = job.stderr.read().decode()
-        job.stderr.close()
-    except:
-        stderr = None
+class Files(enum.Enum):
+    """Types of files."""
 
-    if stdout is not None and stderr is not None:
-        result = (stdout, stderr)
-    elif stdout and stderr is None:
-        result = stdout
-    elif stderr and stdout is None:
-        result = stderr
-    else:
-        result = None
+    PIPE = enum.auto()
+    VAR = enum.auto()
+    NULL = enum.auto()
+    DEFAULT = enum.auto()
+    STDIN = enum.auto()
+    STDOUT = enum.auto()
+    STDERR = enum.auto()
 
-    return result
-
+FileInputType = (IO | Files | str | Path)
 
 class Job:
-    """A Job is a wrapper around a Popen.
+    """A Job is a wrapper around a Popen."""
 
-    You might be asking, why do we need a wrapper around Popen?
-    The main reason is that I want to be able to modify the object
-    before starting the process. It's also nice to be able to
-    control the interface.
-    """
-
-    def __init__(self, path, *args, env=os.environ, cwd=None):
+    def __init__(self,
+                 path: str | Path,
+                 *args: str,
+                 env: dict = dict(os.environ),
+                 cwd: str | Path = ''):
+        """Initialize a Job."""
         self.path = path
         self.args = args
         self.env = env
@@ -63,25 +47,88 @@ class Job:
         self.cwd = cwd or env.get('PWD', '/')
 
         # Default files. Use stdxxx.buffer for byte buffers
-        self.stdin = sys.stdin
-        self.stdout = sys.stdout.buffer
-        self.stderr = sys.stderr.buffer
+        self.stdin: FileInputType = sys.stdin
+        self.stdout: FileInputType = sys.stdout.buffer
+        self.stderr: FileInputType = sys.stderr.buffer
+
+        self._var_stdout = None
+        self._var_stdout = None
+
+    def _resolve_file(self, file: FileInputType) -> int | IO:
+        """Translate normalized user input to what Popen expects."""
+        # Assume str is a Path. Open Paths.
+        if isinstance(file, (str, Path)):
+            return open(file, 'ab')
+
+        # Translate enums
+        if file == Files.PIPE:
+            return subprocess.PIPE
+        if file == Files.NULL:
+            return subprocess.DEVNULL
+        if file == Files.VAR:
+            return TemporaryFile()
+        if file == Files.STDIN:
+            return sys.stdin
+        if file == Files.STDOUT:
+            return sys.stdout.buffer
+        if file == Files.STDERR:
+            return sys.stderr.buffer
+        if isinstance(file, Files):
+            raise PoshError(f"{file} is not valid in a job")
+
+        # If we are here it should already be a file
+        return file
+
+    def _resolve_files(self):
+        """Resolve stdin/stdout/stderr and return values for Popen."""
+        stdin = self._resolve_file(self.stdin)
+        stdout = self._resolve_file(self.stdout)
+        stderr = self._resolve_file(self.stderr)
+        return stdin, stdout, stderr
+
+    def _handle_opened_files(self, stdin, stdout, stderr):
+        """Handle files we opened."""
+        # Close files we opened just to pass to Popen
+        if isinstance(self.stdin, (str, Path)):
+            stdin.close()
+        if isinstance(self.stdout, (str, Path)):
+            stdout.close()
+        if isinstance(self.stderr, (str, Path)):
+            stderr.close()
+
+        # Save files we opened to buffer a variable
+        if self.stdout == Files.VAR:
+            self._var_stdout = stdout
+        if self.stderr == Files.VAR:
+            self._var_stderr = stderr
 
     def start(self):
-        """Start the process ifbit isn't running"""
+        """Start the process if it isn't running."""
         # Dont start if a proc is already running.
         status = self.status()
         if status != "unstarted" and status != "finished":
             return
 
+        # Setup the files
+        stdin, stdout, stderr = self._resolve_files()
+
         # Setup the command
         cmd = [str(self.path)]+list(self.args)
 
         # Run the process
-        self.proc = Popen(cmd, cwd=self.cwd, env=self.env, stdout=self.stdout, stderr=self.stderr, stdin=self.stdin)
+        self.proc = Popen(
+                cmd,
+                cwd=self.cwd,
+                env=self.env,
+                stdout=stdout,
+                stderr=stderr,
+                stdin=stdin)
+
+        # Close files based off paths
+        self._handle_opened_files(stdin, stdout, stderr)
 
     def status(self):
-        """Status of the job: eg. running, finished"""
+        """Status of the job: eg. running, finished."""
         if self.proc is None:
             return 'unstarted'
         self.proc.poll()
@@ -91,22 +138,60 @@ class Job:
             return 'running'
 
     def wait(self):
+        """Wait for the process to finish."""
         if self.proc and self.status != "finished":
-            # If this proc outputs too much this might cause issues
             self.proc.communicate()
 
     def get_fds(self):
+        """Get stdout/stderr if the proc is running."""
         if self.proc:
             return self.proc.stdout, self.proc.stderr
         else:
             return None, None
 
+    def _read_and_close(self, file):
+        try:
+            file.seek(0)
+            stdout = file.read().decode()
+            file.close()
+        except Exception:
+            stdout = None
+        return stdout
+
+    def var(self):
+        """If the job is finished, return output."""
+        if self.status() != 'finished':
+            return
+
+        stdout = stderr = None
+        if self.stdout == Files.VAR and self._var_stdout:
+            stdout = self._read_and_close(self._var_stdout)
+        if self.stderr == Files.VAR and self._var_stderr:
+            stderr = self._read_and_close(self._var_stderr)
+
+        if stdout is not None and stderr is not None:
+            result = (stdout, stderr)
+        elif stdout and stderr is None:
+            result = stdout
+        elif stderr and stdout is None:
+            result = stderr
+        else:
+            result = None
+
+        return result
 
 class Posh:
     def __init__(self, cwd=None, environ=None):
+        """Initialize the shell.
+
+        Args:
+          cwd: A path to set cwd to.
+          environ: Dictionary of environment variables.
+        """
         self.cwd = cwd or os.getcwd()
         self.environ = dict(os.environ) if environ is None else environ
         self.returncode = 0
+        self.error = ''
 
         # Default files
         self._stdin_default = sys.stdin
@@ -123,8 +208,9 @@ class Posh:
         self._pipe_stderr = False
         self._var_stdout = False
         self._var_stderr = False
-        self._last_job = None
         self._bg = False
+
+        self._last_job: Job | None = None
 
     def _reset_state(self):
         self._stdin = self._stdin_default
@@ -138,106 +224,148 @@ class Posh:
         self._bg = False
 
     def _resolve_path(self, path):
+        """Resolve a path relative to the cwd."""
         path = Path(path)
         if not path.is_absolute():
             path = Path(self.cwd, path)
         return path.resolve()
 
+    def _builtin_response(self, status, output=''):
+        """Set returncode and write an error to stderr."""
+        self.returncode = status
+        if output:
+            self.error = output
+
     def default_files(self,
                       stdin=sys.stdin,
                       stdout=sys.stdout.buffer,
                       stderr=sys.stderr.buffer):
+        """Set the default files.
+
+        This is useful if you are redirecting many commands to
+        the same set of files
+        """
         self._stdin_default = stdin
         self._stdout_default = stdout
         self._stderr_default = stderr
 
     def cd(self, path=None):
+        """Change the shell's current working directory."""
         if not path:
             path = self.environ.get('HOME', '/')
         path = self._resolve_path(path)
         if os.access(path, os.W_OK):
-            self.returncode = 0
+            self._builtin_response(0)
             self.cwd = str(path)
             self.environ['PWD'] = self.cwd
         else:
             self._builtin_response(1, "No permission")
         return self
 
-    def redir(self, stdin=None, stdout=None, stderr=None):
-        if stdin == STDIN:
-            self._stdin = sys.stdin
+    def redir(self,
+              stdin: IO | str | None=None,
+              stdout=None,
+              stderr=None):
+        """Redirect stdin or stdout or stderr.
+
+        DEFAULT = Set the file to the shell's default
+            str = This is assumed to be a file path. If it's not,
+                  that's your problem.
+           Path = A path to a file.
+
+        Args:
+            stdin: One of - DEFAULT/str/Path
+            stdout: One of - DEFAULT/VAR/NULL/str/Path
+            stderr: One of - DEFAULT/VAR/NULL/str/Path
+        """
+        if stdin == Files.DEFAULT:
+            self._stdin = self._stdin_default
         elif isinstance(stdin, (str, Path)):
-            path = self._resolve_path(stdin)
-            self._stdin = path.open('rb')
+            self._stdin = stdin
 
-        if stdout == STDOUT:
-            self._stdout = sys.stdout.buffer
-        elif stdout == VAR:
-            self._stdout = TemporaryFile()
-            self._var_stdout = True
-        elif stdout == NULL:
-            self._stdout = subprocess.DEVNULL
-        elif isinstance(stdout, (str, Path)):
-            path = self._resolve_path(stdout)
-            self._stdout = path.open('ab')
+        if stdout == Files.DEFAULT:
+            self._stdout = self._stdout_default
+        elif stdout in [Files.VAR, Files.NULL] or \
+                isinstance(stdout, (str, Path)):
+            self._stdout = stdout
 
-        if stderr == STDERR:
-            self._stderr = sys.stderr.buffer
-        elif stderr == VAR:
-            self._stderr = TemporaryFile()
-            self._var_stderr = True
-        elif stderr == NULL:
-            self._stderr = subprocess.DEVNULL
-        elif stderr == STDOUT:
-            self._stderr = sys.stdout.buffer
-        elif isinstance(stderr, (str, Path)):
-            path = self._resolve_path(stderr)
-            self._stderr = path.open('ab')
+        if stderr == Files.DEFAULT:
+            self._stderr = self._stderr_default
+        elif stderr in [Files.VAR, Files.NULL] or \
+                isinstance(stderr, (str, Path)):
+            self._stderr = stderr
         return self
 
     def null(self, *args):
+        """Redirect stdout or stderr to /dev/null.
+
+        By default, both stdout and stderr are redirected.
+
+        Args:
+            *args: STDOUT and/or STDERR
+        """
         redir_args = {}
-        if STDOUT in args or STDERR not in args:
-            redir_args['stdout'] = NULL
-        if STDERR in args or STDERR not in args:
-            redir_args['stderr'] = NULL
+        if Files.STDOUT in args or Files.STDERR not in args:
+            redir_args['stdout'] = Files.NULL
+        if Files.STDERR in args or Files.STDERR not in args:
+            redir_args['stderr'] = Files.NULL
         return self.redir(**redir_args)
 
     def var(self, *args):
+        """Buffer stdout/stderr so they can be parsed afterwards.
+        
+        When the next job completes or pipe ends, instead of
+        returning the shell, the stdout/stderr will be returned
+        instead. By default, only stdout is returned.
+
+        Args:
+            *args: STDOUT and/or STDERR
+        """
         redir_args = {}
-        if STDOUT in args or STDERR not in args:
-            redir_args['stdout'] = VAR
-        if STDERR in args:
-            redir_args['stderr'] = VAR
+        if Files.STDOUT in args or Files.STDERR not in args:
+            redir_args['stdout'] = Files.VAR
+        if Files.STDERR in args:
+            redir_args['stderr'] = Files.VAR
         return self.redir(**redir_args)
 
     def pipe(self, *args):
-        if STDOUT in args or STDERR not in args:
+        """Pipe commands together until 'end' is called.
+        
+        By default, stdout is piped and stderr will use it's
+        default file.
+        
+        Args:
+            *args: STDOUT and/or STDERR
+        """
+        if Files.STDOUT in args or Files.STDERR not in args:
             self._pipe_stdout = True
-        if STDERR in args:
+        if Files.STDERR in args:
             self._pipe_stderr = True
+
+        # Set _last_job to None to prevent trying to pipe job not in pipe
         self._last_job = None
+
         return self
 
     def end(self):
+        """Signal the end of a pipe."""
         job = self._last_job
+
+        self._pipe_stdout = False
+        self._pipe_stderr = False
+
+        if job is None:
+            return self
 
         job.stdout = self._stdout
         job.stderr = self._stderr
                     
-        self._pipe_stdout = False
-        self._pipe_stderr = False
-
         return self._execute(job)
 
     def bg(self):
         self._bg = True
         return self
 
-    def _builtin_response(self, status, output):
-        self.returncode = status
-        self._stderr.write(output.encode()+b'\n')
-        
     def __getattr__(self, name):
         path = shutil.which(name, path=self.environ.get("PATH"))
         this_shell = self
@@ -247,7 +375,7 @@ class Posh:
             # a function.
             class Error:
                 def __call__(self, *args, **kwargs):
-                    self._builtin_response(1, "Couldn't find "+name)
+                    this_shell._builtin_response(1, "Couldn't find "+name)
                     return this_shell
                 def __bool__(self):
                     return False
@@ -288,7 +416,8 @@ class Posh:
 
         self._last_job = job
 
-        result = var(job) or self
+        var = job.var()
+        result = self if var is None else var
         return result
 
 
@@ -314,6 +443,5 @@ class Posh:
             job.stderr = subprocess.PIPE
 
         self._last_job = job
-        
-    
+
 sh = Posh()
