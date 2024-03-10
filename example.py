@@ -1,3 +1,5 @@
+#!/bin/python3
+import posh
 from posh import posh
 from pathlib import Path
 sh = posh.sh
@@ -63,6 +65,28 @@ assert sh.true().returncode == 0
 assert sh.true() and sh.true()
 assert sh.false() or sh.true()
 assert not sh.false() and sh.true()
+
+# Check if things are in path
+assert not sh.asdfaes
+assert sh.ls
+
+# Test adding to path
+assert not sh['example.py']
+posh.add_to_path(sh, sh.cwd)
+assert sh['example.py']
+
+# Test background process
+job = sh.bg().sleep(3)
+assert job.status() == 'running'
+assert sh.true()
+job.wait()
+assert job.status() == 'finished'
+
+# Test chaining a couple things together
+a = sh.var().bg().pipe().ping('-c', 10, 'localhost').grep('bytes from').end()
+assert a.status() == 'running'
+a.wait()
+assert len(a.var().splitlines()) == 10
 
 ### builtins
 ##### cd

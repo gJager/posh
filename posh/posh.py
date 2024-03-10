@@ -149,20 +149,21 @@ class Job:
         else:
             return None, None
 
+    # TODO figure out how to get partial writes
     def _read_and_close(self, file):
+        # Check status before reading
+        status = self.status()
         try:
             file.seek(0)
-            stdout = file.read().decode()
-            file.close()
+            output = file.read().decode()
         except Exception:
-            stdout = None
-        return stdout
+            output = None
+        if status == 'finished':
+            file.close()
+        return output
 
     def var(self):
-        """If the job is finished, return output."""
-        if self.status() != 'finished':
-            return
-
+        """Get the output."""
         stdout = stderr = None
         if self.stdout == Files.VAR and self._var_stdout:
             stdout = self._read_and_close(self._var_stdout)
@@ -181,15 +182,15 @@ class Job:
         return result
 
 class Posh:
-    def __init__(self, cwd=None, environ=None):
+    def __init__(self, cwd=None, env=None):
         """Initialize the shell.
 
         Args:
           cwd: A path to set cwd to.
-          environ: Dictionary of environment variables.
+          env: Dictionary of environment variables.
         """
         self.cwd = cwd or os.getcwd()
-        self.environ = dict(os.environ) if environ is None else environ
+        self.env = dict(os.environ) if env is None else env
         self.returncode = 0
         self.error = ''
 
@@ -252,12 +253,12 @@ class Posh:
     def cd(self, path=None):
         """Change the shell's current working directory."""
         if not path:
-            path = self.environ.get('HOME', '/')
+            path = self.env.get('HOME', '/')
         path = self._resolve_path(path)
         if os.access(path, os.W_OK):
             self._builtin_response(0)
             self.cwd = str(path)
-            self.environ['PWD'] = self.cwd
+            self.env['PWD'] = self.cwd
         else:
             self._builtin_response(1, "No permission")
         return self
@@ -367,7 +368,7 @@ class Posh:
         return self
 
     def __getattr__(self, name):
-        path = shutil.which(name, path=self.environ.get("PATH"))
+        path = shutil.which(name, path=self.env.get("PATH"))
         this_shell = self
         if not path:
             # I tried setting __bool__ on a function but that didn't
@@ -392,7 +393,12 @@ class Posh:
 
     def _run(self, path, *args, **kwargs):
         #TODO catch errors
-        job = Job(path, *args, env=self.environ)
+        string_args = []
+        for param in args:
+            if not isinstance(param, (bytes, bytearray)):
+                param = str(param)
+            string_args.append(param)
+        job = Job(path, *string_args, env=self.env)
 
         # Use the env's files
         job.stdin = self._stdin
@@ -406,10 +412,14 @@ class Posh:
 
     def _execute(self, job):
         job.start()
-
+        
+        # We need to reset state, including _bg, before we leave this function.
+        # If we want to be able to background the process, we need to know _bg
+        bg = self._bg
+        
         self._reset_state()
 
-        if self._bg:
+        if bg:
             return job
         job.wait()
         self.returncode = job.proc.returncode
@@ -443,5 +453,17 @@ class Posh:
             job.stderr = subprocess.PIPE
 
         self._last_job = job
+
+def add_to_path(sh, path, mode='append'):
+    PATH = sh.env.get('PATH', '')
+    if path in PATH:
+        return
+
+    if mode == 'append':
+        PATH = PATH + f":{path}"
+    else:
+        PATH = f"{path}:" + PATH
+
+    sh.env['PATH'] = PATH
 
 sh = Posh()
