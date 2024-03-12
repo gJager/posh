@@ -1,5 +1,3 @@
-#TODO Run str() on non str/byte command args
-#TODO Change how files are handled so that we are opening/closing them properly
 #TODO Stretch goal. Make Job generic. Make sh that can run Popen jobs as well as
 #       run jobs in a process (this would allow control via ssh)
 import sys
