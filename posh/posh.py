@@ -5,12 +5,12 @@
 import sys
 import os
 import shutil
+import fcntl
 import subprocess
 import enum
 from typing import IO
 from subprocess import Popen
 from pathlib import Path
-from tempfile import TemporaryFile
 from functools import partial
 
 class PoshError(Exception):
@@ -51,14 +51,11 @@ class Job:
         self.stdout: FileInputType = sys.stdout.buffer
         self.stderr: FileInputType = sys.stderr.buffer
 
-        self._var_stdout = None
-        self._var_stdout = None
-
-    def _resolve_file(self, file: FileInputType) -> int | IO:
+    def _resolve_file(self, file: FileInputType, mode: str='ab') -> int | IO:
         """Translate normalized user input to what Popen expects."""
         # Assume str is a Path. Open Paths.
         if isinstance(file, (str, Path)):
-            return open(file, 'ab')
+            return open(file, mode)
 
         # Translate enums
         if file == Files.PIPE:
@@ -66,7 +63,7 @@ class Job:
         if file == Files.NULL:
             return subprocess.DEVNULL
         if file == Files.VAR:
-            return TemporaryFile()
+            return subprocess.PIPE
         if file == Files.STDIN:
             return sys.stdin
         if file == Files.STDOUT:
@@ -81,12 +78,18 @@ class Job:
 
     def _resolve_files(self):
         """Resolve stdin/stdout/stderr and return values for Popen."""
-        stdin = self._resolve_file(self.stdin)
+        stdin = self._resolve_file(self.stdin, mode='rb')
         stdout = self._resolve_file(self.stdout)
         stderr = self._resolve_file(self.stderr)
         return stdin, stdout, stderr
 
-    def _handle_opened_files(self, stdin, stdout, stderr):
+    @staticmethod
+    def _make_non_blocking(file):
+        fd = file.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+    def _handle_files_post_start(self, stdin, stdout, stderr):
         """Handle files we opened."""
         # Close files we opened just to pass to Popen
         if isinstance(self.stdin, (str, Path)):
@@ -96,11 +99,10 @@ class Job:
         if isinstance(self.stderr, (str, Path)):
             stderr.close()
 
-        # Save files we opened to buffer a variable
         if self.stdout == Files.VAR:
-            self._var_stdout = stdout
+            self._make_non_blocking(self.proc.stdout)
         if self.stderr == Files.VAR:
-            self._var_stderr = stderr
+            self._make_non_blocking(self.proc.stderr)
 
     def start(self):
         """Start the process if it isn't running."""
@@ -125,7 +127,7 @@ class Job:
                 stdin=stdin)
 
         # Close files based off paths
-        self._handle_opened_files(stdin, stdout, stderr)
+        self._handle_files_post_start(stdin, stdout, stderr)
 
     def status(self):
         """Status of the job: eg. running, finished."""
@@ -140,7 +142,7 @@ class Job:
     def wait(self):
         """Wait for the process to finish."""
         if self.proc and self.status != "finished":
-            self.proc.communicate()
+            self.proc.wait()
 
     def get_fds(self):
         """Get stdout/stderr if the proc is running."""
@@ -149,36 +151,67 @@ class Job:
         else:
             return None, None
 
-    # TODO figure out how to get partial writes
-    def _read_and_close(self, file):
-        # Check status before reading
-        status = self.status()
-        try:
-            file.seek(0)
-            output = file.read().decode()
-        except Exception:
-            output = None
-        if status == 'finished':
-            file.close()
+    @staticmethod
+    def _read_file(file, type, *args, bytes, **kwargs):
+        output = file.__getattribute__(type)(*args, **kwargs)
+
+        # Nonblocking files can return None on read. I don't like that
+        if output is None:
+            output = b''
+
+        # Decode if needed
+        if not bytes and isinstance(output, list):
+            output = [line.decode() for line in output]
+        elif not bytes:
+            output = output.decode()
+
         return output
 
+    def err(self, len=-1, bytes=False):
+        if self.stderr == Files.VAR:
+            return self._read_file(self.proc.stderr, 'read',
+                                   len, bytes=bytes)
+
+    def errline(self, bytes=False):
+        if self.stderr == Files.VAR:
+            return self._read_file(self.proc.stderr, 'readline',
+                                   bytes=bytes)
+
+    def errlines(self, bytes=False):
+        if self.stderr == Files.VAR:
+            return self._read_file(self.proc.stderr, 'readlines',
+                                   bytes=bytes)
+
+    def readlines(self, bytes=False):
+        if self.stdout == Files.VAR:
+            return self._read_file(self.proc.stdout, 'readlines',
+                                   bytes=bytes)
+
+    def readline(self, bytes=False):
+        if self.stdout == Files.VAR:
+            return self._read_file(self.proc.stdout, 'readline',
+                                   bytes=bytes)
+
+    def read(self, len=-1, bytes=False):
+        if self.stdout == Files.VAR:
+            return self._read_file(self.proc.stdout, 'read',
+                                   len, bytes=bytes)
+
     def var(self):
-        """Get the output."""
         stdout = stderr = None
-        if self.stdout == Files.VAR and self._var_stdout:
-            stdout = self._read_and_close(self._var_stdout)
-        if self.stderr == Files.VAR and self._var_stderr:
-            stderr = self._read_and_close(self._var_stderr)
+        if self.stdout == Files.VAR:
+            stdout = self.read()
+        if self.stderr == Files.VAR:
+            stderr = self.err()
 
         if stdout is not None and stderr is not None:
             result = (stdout, stderr)
-        elif stdout and stderr is None:
+        elif stdout is not None and stderr is None:
             result = stdout
-        elif stderr and stdout is None:
+        elif stderr is not and stdout is None:
             result = stderr
         else:
             result = None
-
         return result
 
 class Posh:

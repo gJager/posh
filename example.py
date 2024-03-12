@@ -17,6 +17,8 @@ sh.true()
 #Run a command named `a` and pipe it's stdout into a file named `afile`.
 sh.redir(stdout=afile).echo('hi')
 assert(afile.read_text() == 'hi\n')
+v = sh.var().redir(stdin='afile').cat()
+assert(v == 'hi\n')
 afile.unlink()
 
 #### redir(stdout='afile').a().b()
