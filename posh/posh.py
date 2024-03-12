@@ -206,7 +206,7 @@ class Job:
             result = (stdout, stderr)
         elif stdout is not None and stderr is None:
             result = stdout
-        elif stderr is not and stdout is None:
+        elif stderr is not None and stdout is None:
             result = stderr
         else:
             result = None
