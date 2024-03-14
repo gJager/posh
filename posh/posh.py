@@ -312,19 +312,17 @@ class Posh:
         """
         if stdin == Files.DEFAULT:
             self._stdin = self._stdin_default
-        elif isinstance(stdin, (str, Path)):
+        else:
             self._stdin = stdin
 
         if stdout == Files.DEFAULT:
             self._stdout = self._stdout_default
-        elif stdout in [Files.VAR, Files.NULL] or \
-                isinstance(stdout, (str, Path)):
+        else:
             self._stdout = stdout
 
         if stderr == Files.DEFAULT:
             self._stderr = self._stderr_default
-        elif stderr in [Files.VAR, Files.NULL] or \
-                isinstance(stderr, (str, Path)):
+        else:
             self._stderr = stderr
         return self
 
