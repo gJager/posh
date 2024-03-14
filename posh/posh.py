@@ -212,6 +212,22 @@ class Job:
             result = None
         return result
 
+class Path:
+    def __init__(self, env):
+        self.env = env
+
+    def add(self, path, mode='append'):
+        PATH = self.env.get('PATH', '')
+        if path in PATH:
+            return
+
+        if mode == 'append':
+            PATH = PATH + f":{path}"
+        else: # prepend
+            PATH = f"{path}:" + PATH
+
+        sh.env['PATH'] = PATH
+
 class Posh:
     def __init__(self, cwd=None, env=None):
         """Initialize the shell.
@@ -222,6 +238,7 @@ class Posh:
         """
         self.cwd = cwd or os.getcwd()
         self.env = dict(os.environ) if env is None else env
+        self.path = Path(self.env)
         self.returncode = 0
         self.error = ''
 
@@ -482,17 +499,5 @@ class Posh:
             job.stderr = subprocess.PIPE
 
         self._last_job = job
-
-def add_to_path(sh, path, mode='append'):
-    PATH = sh.env.get('PATH', '')
-    if path in PATH:
-        return
-
-    if mode == 'append':
-        PATH = PATH + f":{path}"
-    else:
-        PATH = f"{path}:" + PATH
-
-    sh.env['PATH'] = PATH
 
 sh = Posh()
