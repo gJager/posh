@@ -228,6 +228,21 @@ class Path:
 
         sh.env['PATH'] = PATH
 
+    def remove(self, path):
+        path = Path(path).resolve()
+        PATH = self.env.get('PATH', '')
+        paths = []
+        for p in PATH.split(':'):
+            if Path(p).resolve() != path:
+                paths.append()
+        self.env['PATH'] = ':'.join(paths)
+
+    def __str__(self):
+        return self.env.get('PATH', '')
+
+    def __repr__(self):
+        return str(self)
+
 class Posh:
     def __init__(self, cwd=None, env=None):
         """Initialize the shell.
