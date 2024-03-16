@@ -195,6 +195,13 @@ class Job:
             return self._read_file(self.proc.stdout, 'read',
                                    len, bytes=bytes)
 
+    def write(self, data):
+        if self.stdin == Files.VAR:
+            if type(data) == str:
+                data = data.encode()
+            self.proc.stdin.write(data)
+            self.proc.stdin.flush()
+
     def var(self):
         stdout = stderr = None
         if self.stdout == Files.VAR:
@@ -384,10 +391,12 @@ class Posh:
             *args: STDOUT and/or STDERR
         """
         redir_args = {}
-        if Files.STDOUT in args or Files.STDERR not in args:
+        if Files.STDOUT in args or not args:
             redir_args['stdout'] = Files.VAR
         if Files.STDERR in args:
             redir_args['stderr'] = Files.VAR
+        if Files.STDIN in args:
+            redir_args['stdin'] = Files.VAR
         return self.redir(**redir_args)
 
     def pipe(self, *args):
