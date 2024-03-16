@@ -8,7 +8,7 @@ import subprocess
 import enum
 from typing import IO
 from subprocess import Popen
-from pathlib import Path
+from pathlib import Path, PurePath
 from functools import partial
 
 class PoshError(Exception):
@@ -52,7 +52,7 @@ class Job:
     def _resolve_file(self, file: FileInputType, mode: str='ab') -> int | IO:
         """Translate normalized user input to what Popen expects."""
         # Assume str is a Path. Open Paths.
-        if isinstance(file, (str, Path)):
+        if isinstance(file, (str, PurePath)):
             return open(file, mode)
 
         # Translate enums
@@ -90,11 +90,11 @@ class Job:
     def _handle_files_post_start(self, stdin, stdout, stderr):
         """Handle files we opened."""
         # Close files we opened just to pass to Popen
-        if isinstance(self.stdin, (str, Path)):
+        if isinstance(self.stdin, (str, PurePath)):
             stdin.close()
-        if isinstance(self.stdout, (str, Path)):
+        if isinstance(self.stdout, (str, PurePath)):
             stdout.close()
-        if isinstance(self.stderr, (str, Path)):
+        if isinstance(self.stderr, (str, PurePath)):
             stderr.close()
 
         if self.stdout == Files.VAR:
@@ -344,17 +344,17 @@ class Posh:
         """
         if stdin == Files.DEFAULT:
             self._stdin = self._stdin_default
-        else:
+        elif stdin is not None:
             self._stdin = stdin
 
         if stdout == Files.DEFAULT:
             self._stdout = self._stdout_default
-        else:
+        elif stdout is not None:
             self._stdout = stdout
 
         if stderr == Files.DEFAULT:
             self._stderr = self._stderr_default
-        else:
+        elif stderr is not None:
             self._stderr = stderr
         return self
 

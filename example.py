@@ -74,7 +74,7 @@ assert sh.ls
 
 # Test adding to path
 assert not sh['example.py']
-posh.add_to_path(sh, sh.cwd)
+sh.path.add(sh.cwd)
 assert sh['example.py']
 
 # Test background process
