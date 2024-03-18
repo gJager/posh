@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='posh',
-    version='1.1.0',    
+    version='1.1.1',    
     description='A python shell',
     url='https://github.com/gJager/posh',
     author='Graeme Jager',

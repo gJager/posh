@@ -219,13 +219,13 @@ class Job:
             result = None
         return result
 
-class Path:
+class PATH:
     def __init__(self, env):
         self.env = env
 
     def add(self, path, mode='append'):
         PATH = self.env.get('PATH', '')
-        if path in PATH:
+        if str(path) in PATH:
             return
 
         if mode == 'append':
@@ -260,7 +260,7 @@ class Posh:
         """
         self.cwd = cwd or os.getcwd()
         self.env = dict(os.environ) if env is None else env
-        self.path = Path(self.env)
+        self.path = PATH(self.env)
         self.returncode = 0
         self.error = ''
 
