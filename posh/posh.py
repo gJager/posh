@@ -7,6 +7,7 @@ import fcntl
 import subprocess
 import enum
 from typing import IO
+from typing import cast
 from subprocess import Popen
 from pathlib import Path, PurePath
 from functools import partial
@@ -74,7 +75,7 @@ class Job:
         # If we are here it should already be a file
         return file
 
-    def _resolve_files(self):
+    def _resolve_files(self) -> tuple[int|IO, int|IO, int|IO]:
         """Resolve stdin/stdout/stderr and return values for Popen."""
         stdin = self._resolve_file(self.stdin, mode='rb')
         stdout = self._resolve_file(self.stdout)
@@ -82,12 +83,12 @@ class Job:
         return stdin, stdout, stderr
 
     @staticmethod
-    def _make_non_blocking(file):
+    def _make_non_blocking(file: IO) -> None:
         fd = file.fileno()
         fl = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
-    def _handle_files_post_start(self, stdin, stdout, stderr):
+    def _handle_files_post_start(self, stdin, stdout, stderr) -> None:
         """Handle files we opened."""
         # Close files we opened just to pass to Popen
         if isinstance(self.stdin, (str, PurePath)):
@@ -97,12 +98,12 @@ class Job:
         if isinstance(self.stderr, (str, PurePath)):
             stderr.close()
 
-        if self.stdout == Files.VAR:
+        if self.stdout == Files.VAR and self.proc and self.proc.stdout:
             self._make_non_blocking(self.proc.stdout)
-        if self.stderr == Files.VAR:
+        if self.stderr == Files.VAR and self.proc and self.proc.stderr:
             self._make_non_blocking(self.proc.stderr)
 
-    def start(self):
+    def start(self) -> None:
         """Start the process if it isn't running."""
         # Dont start if a proc is already running.
         status = self.status()
@@ -127,7 +128,7 @@ class Job:
         # Close files based off paths
         self._handle_files_post_start(stdin, stdout, stderr)
 
-    def status(self):
+    def status(self) -> str:
         """Status of the job: eg. running, finished."""
         if self.proc is None:
             return 'unstarted'
@@ -137,12 +138,12 @@ class Job:
         else:
             return 'running'
 
-    def wait(self):
+    def wait(self) -> None:
         """Wait for the process to finish."""
         if self.proc and self.status != "finished":
             self.proc.wait()
 
-    def get_fds(self):
+    def get_fds(self) -> tuple[None|IO, None|IO]:
         """Get stdout/stderr if the proc is running."""
         if self.proc:
             return self.proc.stdout, self.proc.stderr
@@ -150,8 +151,9 @@ class Job:
             return None, None
 
     @staticmethod
-    def _read_file(file, type, *args, bytes, **kwargs):
-        output = file.__getattribute__(type)(*args, **kwargs)
+    def _read_file(file: IO, mode: str, *args, bytes: bool, **kwargs) -> list | bytes | str:
+        """Generic read file function"""
+        output = file.__getattribute__(mode)(*args, **kwargs)
 
         # Nonblocking files can return None on read. I don't like that
         if output is None:
@@ -165,44 +167,56 @@ class Job:
 
         return output
 
-    def err(self, len=-1, bytes=False):
-        if self.stderr == Files.VAR:
-            return self._read_file(self.proc.stderr, 'read',
-                                   len, bytes=bytes)
+    def err(self, len: int=-1, bytes: bool=False) -> bytes | str:
+        if not self.proc or not self.proc.stderr or self.stderr != Files.VAR:
+            return ""
 
-    def errline(self, bytes=False):
-        if self.stderr == Files.VAR:
-            return self._read_file(self.proc.stderr, 'readline',
-                                   bytes=bytes)
+        return cast(str, self._read_file(self.proc.stderr,
+                                         'read', len, bytes=bytes))
 
-    def errlines(self, bytes=False):
-        if self.stderr == Files.VAR:
-            return self._read_file(self.proc.stderr, 'readlines',
-                                   bytes=bytes)
+    def errline(self, bytes: bool=False) -> bytes | str:
+        if not self.proc or not self.proc.stderr or self.stderr != Files.VAR:
+            return ""
 
-    def readlines(self, bytes=False):
-        if self.stdout == Files.VAR:
-            return self._read_file(self.proc.stdout, 'readlines',
-                                   bytes=bytes)
+        return cast(str, self._read_file(self.proc.stderr,
+                                         'readline', bytes=bytes))
 
-    def readline(self, bytes=False):
-        if self.stdout == Files.VAR:
-            return self._read_file(self.proc.stdout, 'readline',
-                                   bytes=bytes)
+    def errlines(self, bytes: bool=False) -> list[bytes | str]:
+        if not self.proc or not self.proc.stderr or self.stderr != Files.VAR:
+            return []
 
-    def read(self, len=-1, bytes=False):
-        if self.stdout == Files.VAR:
-            return self._read_file(self.proc.stdout, 'read',
-                                   len, bytes=bytes)
+        return cast(list, self._read_file(self.proc.stderr,
+                               'readlines', bytes=bytes))
 
-    def write(self, data):
-        if self.stdin == Files.VAR:
+    def readlines(self, bytes: bool=False) -> list[bytes | str]:
+        if not self.proc or not self.proc.stdout or self.stdout != Files.VAR:
+            return []
+
+        return cast(list, self._read_file(self.proc.stdout,
+                                          'readlines', bytes=bytes))
+
+    def readline(self, bytes: bool=False) -> bytes | str:
+        if not self.proc or not self.proc.stdout or self.stdout != Files.VAR:
+            return ''
+
+        return cast(str, self._read_file(self.proc.stdout,
+                                         'readline', bytes=bytes))
+
+    def read(self, len=-1, bytes=False) -> bytes | str:
+        if not self.proc or not self.proc.stdout or self.stdout != Files.VAR:
+            return ''
+
+        return cast(str, self._read_file(self.proc.stdout,
+                                         'read', len, bytes=bytes))
+
+    def write(self, data: bytes | str) -> None:
+        if self.proc and self.proc.stdin and self.stdin == Files.VAR:
             if type(data) == str:
                 data = data.encode()
-            self.proc.stdin.write(data)
+            self.proc.stdin.write(cast(bytes, data))
             self.proc.stdin.flush()
 
-    def var(self):
+    def var(self) -> str:
         stdout = stderr = None
         if self.stdout == Files.VAR:
             stdout = self.read()
@@ -217,7 +231,7 @@ class Job:
             result = stderr
         else:
             result = None
-        return result
+        return cast(str, result)
 
 class PATH:
     def __init__(self, env):
