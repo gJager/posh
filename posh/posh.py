@@ -8,6 +8,7 @@ import subprocess
 import enum
 from typing import IO
 from typing import cast
+from typing import Callable
 from subprocess import Popen
 from pathlib import Path, PurePath
 from functools import partial
@@ -28,7 +29,7 @@ class Files(enum.Enum):
     STDOUT = enum.auto()
     STDERR = enum.auto()
 
-FileInputType = (IO | Files | str | Path)
+FileInputType = (int | IO | Files | str | Path)
 
 class Job:
     """A Job is a wrapper around a Popen."""
@@ -234,10 +235,10 @@ class Job:
         return cast(str, result)
 
 class PATH:
-    def __init__(self, env):
+    def __init__(self, env: dict):
         self.env = env
 
-    def add(self, path, mode='append'):
+    def add(self, path: str | Path, mode='append') -> None:
         PATH = self.env.get('PATH', '')
         if str(path) in PATH:
             return
@@ -249,23 +250,23 @@ class PATH:
 
         sh.env['PATH'] = PATH
 
-    def remove(self, path):
+    def remove(self, path: str | Path) -> None:
         path = Path(path).resolve()
         PATH = self.env.get('PATH', '')
         paths = []
         for p in PATH.split(':'):
             if Path(p).resolve() != path:
-                paths.append()
+                paths.append(p)
         self.env['PATH'] = ':'.join(paths)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.env.get('PATH', '')
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return str(self)
 
 class Posh:
-    def __init__(self, cwd=None, env=None):
+    def __init__(self, cwd: str | None=None, env: dict | None=None):
         """Initialize the shell.
 
         Args:
@@ -297,7 +298,7 @@ class Posh:
 
         self._last_job: Job | None = None
 
-    def _reset_state(self):
+    def _reset_state(self) -> None:
         self._stdin = self._stdin_default
         self._stdout = self._stdout_default
         self._stderr = self._stderr_default
@@ -308,23 +309,23 @@ class Posh:
         self._var_stderr = False
         self._bg = False
 
-    def _resolve_path(self, path):
+    def _resolve_path(self, path: str | Path) -> Path:
         """Resolve a path relative to the cwd."""
         path = Path(path)
         if not path.is_absolute():
             path = Path(self.cwd, path)
         return path.resolve()
 
-    def _builtin_response(self, status, output=''):
+    def _builtin_response(self, status: int, output: str='') -> None:
         """Set returncode and write an error to stderr."""
         self.returncode = status
         if output:
             self.error = output
 
     def default_files(self,
-                      stdin=sys.stdin,
-                      stdout=sys.stdout.buffer,
-                      stderr=sys.stderr.buffer):
+                      stdin: FileInputType=sys.stdin,
+                      stdout: FileInputType=sys.stdout.buffer,
+                      stderr: FileInputType=sys.stderr.buffer) -> None:
         """Set the default files.
 
         This is useful if you are redirecting many commands to
@@ -334,7 +335,7 @@ class Posh:
         self._stdout_default = stdout
         self._stderr_default = stderr
 
-    def cd(self, path=None):
+    def cd(self, path: str | Path | None=None) -> 'Posh':
         """Change the shell's current working directory."""
         if not path:
             path = self.env.get('HOME', '/')
@@ -348,9 +349,9 @@ class Posh:
         return self
 
     def redir(self,
-              stdin: IO | str | None=None,
-              stdout=None,
-              stderr=None):
+              stdin: FileInputType | None=None,
+              stdout: FileInputType | None=None,
+              stderr: FileInputType | None=None) -> 'Posh':
         """Redirect stdin or stdout or stderr.
 
         DEFAULT = Set the file to the shell's default
@@ -379,7 +380,7 @@ class Posh:
             self._stderr = stderr
         return self
 
-    def null(self, *args):
+    def null(self, *args: list[Files]) -> 'Posh':
         """Redirect stdout or stderr to /dev/null.
 
         By default, both stdout and stderr are redirected.
@@ -394,7 +395,7 @@ class Posh:
             redir_args['stderr'] = Files.NULL
         return self.redir(**redir_args)
 
-    def var(self, *args):
+    def var(self, *args: list[Files]) -> 'Posh':
         """Buffer stdout/stderr so they can be parsed afterwards.
         
         When the next job completes or pipe ends, instead of
@@ -413,7 +414,7 @@ class Posh:
             redir_args['stdin'] = Files.VAR
         return self.redir(**redir_args)
 
-    def pipe(self, *args):
+    def pipe(self, *args: list[Files]) -> 'Posh':
         """Pipe commands together until 'end' is called.
         
         By default, stdout is piped and stderr will use it's
@@ -432,7 +433,7 @@ class Posh:
 
         return self
 
-    def end(self):
+    def end(self) -> 'Posh | str | Job':
         """Signal the end of a pipe."""
         job = self._last_job
 
@@ -447,11 +448,11 @@ class Posh:
                     
         return self._execute(job)
 
-    def bg(self):
+    def bg(self) -> 'Posh':
         self._bg = True
         return self
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Callable:
         path = shutil.which(name, path=self.env.get("PATH"))
         this_shell = self
         if not path:
@@ -462,20 +463,20 @@ class Posh:
                 def __call__(self, *args, **kwargs):
                     this_shell._builtin_response(1, "Couldn't find "+name)
                     return this_shell
-                def __bool__(self):
+                def __bool__(self) -> bool:
                     return False
             error = Error()
             return error
         else:
             return partial(self._run, path)
 
-    def __getitem__(self, name):
+    def __getitem__(self, name: str) -> Callable:
         return self.__getattr__(name)
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return self.returncode == 0
 
-    def _run(self, path, *args, **kwargs):
+    def _run(self, path: str, *args: list, **kwargs: dict) -> 'Posh | str | Job':
         #TODO catch errors
         string_args = []
         for param in args:
@@ -494,7 +495,7 @@ class Posh:
             return self
         return self._execute(job)
 
-    def _execute(self, job):
+    def _execute(self, job: Job) -> 'Posh | str | Job':
         job.start()
         
         # We need to reset state, including _bg, before we leave this function.
@@ -506,7 +507,7 @@ class Posh:
         if bg:
             return job
         job.wait()
-        self.returncode = job.proc.returncode
+        self.returncode = job.proc.returncode # type: ignore
 
         self._last_job = job
 
@@ -515,7 +516,7 @@ class Posh:
         return result
 
 
-    def _execute_pipe(self, job):
+    def _execute_pipe(self, job: Job) -> None:
         last_job = self._last_job
         if last_job:
             last_job.start()
