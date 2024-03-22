@@ -335,17 +335,18 @@ class Posh:
         self._stdout_default = stdout
         self._stderr_default = stderr
 
+        self._reset_files()
+
     def cd(self, path: str | Path | None=None) -> 'Posh':
         """Change the shell's current working directory."""
         if not path:
             path = self.env.get('HOME', '/')
         path = self._resolve_path(path)
         if os.access(path, os.W_OK):
-            self._builtin_response(0)
             self.cwd = str(path)
             self.env['PWD'] = self.cwd
         else:
-            self._builtin_response(1, "No permission")
+            raise PoshError("No permission")
         return self
 
     def redir(self,
@@ -461,8 +462,7 @@ class Posh:
             # a function.
             class Error:
                 def __call__(self, *args, **kwargs):
-                    this_shell._builtin_response(1, "Couldn't find "+name)
-                    return this_shell
+                    raise PoshError("Not in path")
                 def __bool__(self) -> bool:
                     return False
             error = Error()
