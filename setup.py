@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(
-    name='posh',
+    name='py-posh',
     version='1.1.1',    
     description='A python shell',
     url='https://github.com/gJager/posh',
