@@ -37,6 +37,7 @@ class Job:
     def __init__(self,
                  path: str | Path,
                  *args: str,
+                 shell: bool=False,
                  env: dict = dict(os.environ),
                  cwd: str | Path = ''):
         """Initialize a Job."""
@@ -44,6 +45,7 @@ class Job:
         self.args = args
         self.env = env
         self.proc = None
+        self.shell = shell
         self.cwd = cwd or env.get('PWD', '/')
 
         # Default files. Use stdxxx.buffer for byte buffers
@@ -115,13 +117,17 @@ class Job:
         stdin, stdout, stderr = self._resolve_files()
 
         # Setup the command
-        cmd = [str(self.path)]+list(self.args)
+        if self.shell:
+            cmd = ' '.join([str(self.path)] + list(self.args))
+        else:
+            cmd = [str(self.path)]+list(self.args)
 
         # Run the process
         self.proc = Popen(
                 cmd,
                 cwd=self.cwd,
                 env=self.env,
+                shell=self.shell,
                 stdout=stdout,
                 stderr=stderr,
                 stdin=stdin)
@@ -295,6 +301,7 @@ class Posh:
         self._var_stdout = False
         self._var_stderr = False
         self._bg = False
+        self._shell = False
 
         self._last_job: Job | None = None
 
@@ -308,6 +315,7 @@ class Posh:
         self._var_stdout = False
         self._var_stderr = False
         self._bg = False
+        self._shell = False
 
     def _resolve_path(self, path: str | Path) -> Path:
         """Resolve a path relative to the cwd."""
@@ -453,6 +461,10 @@ class Posh:
         self._bg = True
         return self
 
+    def shell(self) -> 'Posh':
+        self._shell = True
+        return self
+
     def __getattr__(self, name: str) -> Callable:
         path = shutil.which(name, path=self.env.get("PATH"))
         this_shell = self
@@ -476,6 +488,9 @@ class Posh:
     def __bool__(self) -> bool:
         return self.returncode == 0
 
+    def __call__(self, cmd, *args):
+        return self._run(cmd, *args)
+
     def _run(self, path: str, *args: list, **kwargs: dict) -> 'Posh | str | Job':
         #TODO catch errors
         string_args = []
@@ -483,7 +498,7 @@ class Posh:
             if not isinstance(param, (bytes, bytearray)):
                 param = str(param)
             string_args.append(param)
-        job = Job(path, *string_args, env=self.env)
+        job = Job(path, *string_args, env=self.env, shell=self._shell)
 
         # Use the env's files
         job.stdin = self._stdin
