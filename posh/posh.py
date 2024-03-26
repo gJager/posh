@@ -343,14 +343,14 @@ class Posh:
         self._stdout_default = stdout
         self._stderr_default = stderr
 
-        self._reset_files()
+        self._reset_state()
 
     def cd(self, path: str | Path | None=None) -> 'Posh':
         """Change the shell's current working directory."""
         if not path:
             path = self.env.get('HOME', '/')
         path = self._resolve_path(path)
-        if os.access(path, os.W_OK):
+        if path.is_dir() and os.access(path, os.X_OK):
             self.cwd = str(path)
             self.env['PWD'] = self.cwd
         else:
