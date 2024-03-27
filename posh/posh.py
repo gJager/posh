@@ -285,10 +285,11 @@ class Posh:
         self.returncode = 0
         self.error = ''
 
-        # Default files
+        # Defaults
         self._stdin_default = sys.stdin
         self._stdout_default = sys.stdout.buffer
         self._stderr_default = sys.stderr.buffer
+        self._shell_default = False
 
         # Files
         self._stdin = self._stdin_default
@@ -301,7 +302,7 @@ class Posh:
         self._var_stdout = False
         self._var_stderr = False
         self._bg = False
-        self._shell = False
+        self._shell = self._shell_default
 
         self._last_job: Job | None = None
 
@@ -315,7 +316,7 @@ class Posh:
         self._var_stdout = False
         self._var_stderr = False
         self._bg = False
-        self._shell = False
+        self._shell = self._shell_default
 
     def _resolve_path(self, path: str | Path) -> Path:
         """Resolve a path relative to the cwd."""
@@ -330,18 +331,23 @@ class Posh:
         if output:
             self.error = output
 
-    def default_files(self,
-                      stdin: FileInputType=sys.stdin,
-                      stdout: FileInputType=sys.stdout.buffer,
-                      stderr: FileInputType=sys.stderr.buffer) -> None:
-        """Set the default files.
+    def defaults(self,
+                 shell: bool | None=None,
+                 stdin: FileInputType|None=None,
+                 stdout: FileInputType|None=None,
+                 stderr: FileInputType|None=None) -> None:
+        """Set the shell's defaults.
 
-        This is useful if you are redirecting many commands to
-        the same set of files
+        Changing default files is useful if you are redirecting
+        many commands to the same set of files.
+        Setting shell allows you to change the default behaviour
+        of the commands so that all strings get turned into a
+        single string with 'shell=True' for Popen
         """
-        self._stdin_default = stdin
-        self._stdout_default = stdout
-        self._stderr_default = stderr
+        self._stdin_default = stdin if stdin else self._stdin_default
+        self._stdout_default = stdout if stdout else self._stdout_default
+        self._stderr_default = stderr if stderr else self._stderr_default
+        self._shell_default = shell if shell else self._shell_default
 
         self._reset_state()
 
