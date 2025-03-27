@@ -471,8 +471,15 @@ class Posh:
         self._shell = True
         return self
 
-    def __getattr__(self, name: str) -> Callable:
+    def __getattr__(self, name: str | Path) -> Callable:
         path = shutil.which(name, path=self.env.get("PATH"))
+        if not path:
+            if Path(name).is_absolute():
+                tpath = name
+            else:
+                tpath = Path(self.cwd, name).absolute().resolve()
+            if os.access(tpath, os.X_OK):
+                path = tpath
         this_shell = self
         if not path:
             # I tried setting __bool__ on a function but that didn't
@@ -480,7 +487,7 @@ class Posh:
             # a function.
             class Error:
                 def __call__(self, *args, **kwargs):
-                    raise PoshError("Not in path")
+                    raise PoshError(f"{name} is not in PATH")
                 def __bool__(self) -> bool:
                     return False
             error = Error()
